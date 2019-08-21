@@ -83,12 +83,15 @@ def prepare_data(data_dir):
         ])
 
 
-def main(exp, frame_sizes, dataset, **params):
+def main(exp, dataset, **params):
+    print(params)
     params = dict(
         default_params,
-        exp=exp, frame_sizes=frame_sizes, dataset=dataset,
+        exp=exp, dataset=dataset,
         **params
     )
+
+    print(params)
 
 
     model = SampleRNN(
@@ -204,7 +207,7 @@ if __name__ == '__main__':
 
     parser.add_argument('--exp', required=True, help='experiment name')
     parser.add_argument(
-        '--frame_sizes', nargs='+', type=int, required=True,
+        '--frame_sizes', nargs='+', type=int, required=False,
         help='frame sizes in terms of the number of lower tier frames, \
               starting from the lowest RNN tier'
     )
