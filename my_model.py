@@ -198,5 +198,6 @@ class LastTire(torch.nn.Module):
         x = F.relu(self.MLP_2(x))
         x = self.MLP_3(x).permute(0, 2, 1).contiguous()
         print("x.view(-1, self.q_levels) : {}".format(x.view(-1, self.q_levels).shape))
+        return x.view(self.batch_size, -1, self.q_levels)
 
-        return F.log_softmax(x.view(-1, self.q_levels), dim=1).view(self.batch_size, -1, self.q_levels)
+        # return F.log_softmax(x.view(-1, self.q_levels), dim=1).view(self.batch_size, -1, self.q_levels)

@@ -3,6 +3,36 @@ from torch import nn
 import numpy as np
 
 
+
+
+def quantize_data(data, classes=256):
+    mu_x = mu_law_encoding(data, classes)
+    bins = np.linspace(-1, 1, classes)
+    quantized = np.digitize(mu_x, bins) - 1
+    return quantized
+
+
+def mu_law_encoding(data, mu):
+    mu_x = np.sign(data) * np.log(1 + mu * np.abs(data)) / np.log(mu + 1)
+    return mu_x
+
+
+def mu_law_expansion(data, mu):
+    s = np.sign(data) * (np.exp(np.abs(data) * np.log(mu + 1)) - 1) / mu
+    return s
+
+def mu_law_decoding(prediction, classes=256):
+    mu = classes - 1
+    # Map values back to [-1, 1].
+    signal = 2 * (prediction / mu) - 1
+    # Perform inverse of mu-law transformation.
+    magnitude = (1 / mu) * ((1 + mu)**abs(signal) - 1)
+    return np.sign(signal) * magnitude
+
+
+
+
+
 EPSILON = 1e-2
 
 def linear_quantize(samples, q_levels):

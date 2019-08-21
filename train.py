@@ -29,7 +29,7 @@ default_params = {
     'q_levels': 256,
     'seq_len': 1024,
     'weight_norm': True,
-    'batch_size': 128,
+    'batch_size': 1,
     'val_frac': 0.1,
     'test_frac': 0.1,
 
@@ -83,24 +83,13 @@ def prepare_data(data_dir):
         ])
 
 
-def main(exp, dataset, **params):
-    print(params)
-    params = dict(
-        default_params,
-        exp=exp, dataset=dataset,
-        **params
-    )
-
-    print(params)
-
+def main(args):
 
     model = SampleRNN(
         frame_sizes=[16,4,4]
     )
-
-    # def reset_hidden_states(model):
-    #     hidden_states = {rnn: None for rnn in model.frame_level_rnns}
-
+    loss_function = nn.CrossEntropyLoss()
+    optimizer = optim.Adam(model.parameters(), lr=args.lr, weight_decay=1e-3)
 
 
     """Load wav file here"""
@@ -108,24 +97,37 @@ def main(exp, dataset, **params):
 
     (seq, _) = librosa.load("./data/test.wav", sr=None, mono=True)
     print(len(seq))
-    input_sequences =  torch.cat([torch.LongTensor(model.first_tire.frame_size).fill_(utils.q_zero(model.q_levels)),
-                                    utils.linear_quantize(torch.from_numpy(seq), model.q_levels)
-                                ])
-    print("input_sequences shape = " +  str(input_sequences.size()))
-    input_sequences = input_sequences.view(1,-1)
-    print("input_sequences shape = " +  str(input_sequences.size()))
-    input_sequences = input_sequences[:,:-1]
-    print("input_sequences shape = " +  str(input_sequences.size()))
-    input_sequences = input_sequences[:,:48]
-    # input_sequences = torch.from_numpy(y.reshape(1,-1))
-    print("input_sequences shape = " +  str(input_sequences.size()))
 
-    print(model(input_sequences).size())
+    for epoch in range(args.epochs):
+        # loss_history_training.append(0.0)
+        # accuracy_history_training.append(0)
+        # scheduler.step()
+        for i, batch in enumerate(dataloader_training):
+            input_sequences =  torch.cat([torch.LongTensor(model.first_tire.frame_size).fill_(utils.q_zero(model.q_levels)),
+                                            utils.linear_quantize(torch.from_numpy(seq), model.q_levels)
+                                        ])
+            target_sequences = utils.linear_quantize(torch.from_numpy(seq), model.q_levels)
+            print("input_sequences shape = " +  str(input_sequences.size()))
+            input_sequences = input_sequences.view(1,-1)
+            print("input_sequences shape = " +  str(input_sequences.size()))
+            input_sequences = input_sequences[:,:-1]
+            print("input_sequences shape = " +  str(input_sequences.size()))
+            input_sequences = input_sequences[:,:96]
+            # input_sequences = torch.from_numpy(y.reshape(1,-1))
+            print("input_sequences shape = " +  str(input_sequences.size()))
 
-    exit()
+            # print(model(input_sequences).size())
 
+            logit = model(input_sequences)
+            prediction = F.log_softmax(logit.view(args.batch_size, -1, self.q_levels), dim=1)
 
-    batch_size = 1
+            loss = loss_function(logit, target_sequences)
+
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
+
+            exit()
 
     upper_tier_conditioning = None
     hidden_states = {rnn: None for rnn in model.frame_level_rnns}
@@ -188,8 +190,24 @@ def main(exp, dataset, **params):
     val_split = test_split - params['val_frac']
 
 
+def get_options(args=None):
+    parser = argparse.ArgumentParser(
+        description="Attention based model for solving the Travelling Salesman Problem with Reinforcement Learning")
 
+    # Data
+    parser.add_argument('--batch_size', type=int, default=32, help='Number of instances per batch during training')
+    parser.add_argument('--val_dataset', type=str, default=None, help='Dataset file to use for validation')
+    parser.add_argument('--epochs', type=int, default=100, help='Number of epochs')
+    parser.add_argument('--lr', type=float, default=0.001, help='Learning rate')
+    parser.add_argument('--pretrained_model', type=str, default=None, help='Path to pretrained model')
+    parser.add_argument('--debug', action="store_true", help='if it is in debug mode')
 
+    return parser.parse_args(args)
+
+if __name__ == '__main__':
+    main(get_options())
+
+"""
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
@@ -290,3 +308,4 @@ if __name__ == '__main__':
     parser.set_defaults(**default_params)
 
     main(**vars(parser.parse_args()))
+"""
