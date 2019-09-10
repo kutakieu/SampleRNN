@@ -1,11 +1,16 @@
 from my_model import SampleRNN
 
-from optim import gradient_clipping
-from nn import sequence_nll_loss_bits
+# from optim import gradient_clipping
+# from nn import sequence_nll_loss_bits
 
-from dataset import FolderDataset, DataLoader
+# from dataset import FolderDataset, DataLoader
+from audio_dataset import AudioFileDataset
+from audio_dataset_test_model import AudioDataset2test_model
 
 import torch
+import torch.nn as nn
+import torch.optim as optim
+import torch.nn.functional as F
 
 import os
 import sys
@@ -14,7 +19,6 @@ import argparse
 
 import librosa
 
-import nn
 import utils
 
 from os import listdir
@@ -84,12 +88,18 @@ def prepare_data(data_dir):
 
 
 def main(args):
-
+    frame_sizes = [16,4,4]
     model = SampleRNN(
-        frame_sizes=[16,4,4]
+        frame_sizes = frame_sizes, bs = args.batch_size
     )
+    sub_batch_length = 512
     loss_function = nn.CrossEntropyLoss()
     optimizer = optim.Adam(model.parameters(), lr=args.lr, weight_decay=1e-3)
+
+    # dataset = AudioFileDataset("./datasets/debug/")
+    dataset = AudioDataset2test_model("./datasets/debug/")
+
+    dataloader_training = torch.utils.data.DataLoader(dataset, batch_size=args.batch_size, shuffle=True)
 
 
     """Load wav file here"""
@@ -103,91 +113,99 @@ def main(args):
         # accuracy_history_training.append(0)
         # scheduler.step()
         for i, batch in enumerate(dataloader_training):
-            input_sequences =  torch.cat([torch.LongTensor(model.first_tire.frame_size).fill_(utils.q_zero(model.q_levels)),
-                                            utils.linear_quantize(torch.from_numpy(seq), model.q_levels)
-                                        ])
-            target_sequences = utils.linear_quantize(torch.from_numpy(seq), model.q_levels)
-            print("input_sequences shape = " +  str(input_sequences.size()))
-            input_sequences = input_sequences.view(1,-1)
-            print("input_sequences shape = " +  str(input_sequences.size()))
-            input_sequences = input_sequences[:,:-1]
-            print("input_sequences shape = " +  str(input_sequences.size()))
-            input_sequences = input_sequences[:,:96]
-            # input_sequences = torch.from_numpy(y.reshape(1,-1))
-            print("input_sequences shape = " +  str(input_sequences.size()))
+            # print(batch.shape)
+            # print(type(batch))
+            first_zero_array = torch.LongTensor(args.batch_size, model.first_tire.frame_size).fill_(utils.q_zero(model.q_levels))
+            quantized_input = torch.LongTensor(utils.quantize_data(batch, model.q_levels))
+            input_sequences =  torch.cat((first_zero_array, quantized_input), dim=1)
+            input_sequences = input_sequences[:batch.shape[1]-model.first_tire.frame_size]
+            target_sequences = input_sequences[:, model.first_tire.frame_size:]
+            # print("input_sequences : ", input_sequences.shape)
+            # print("target_sequences : ", target_sequences.shape)
+            print("batch ", i)
+            for j in range(batch.shape[1] // sub_batch_length):
+                input_sub_batch = input_sequences[:, sub_batch_length*j : sub_batch_length*(j+1)]
+                target_sub_batch = target_sequences[:, sub_batch_length*j : sub_batch_length*(j+1)-model.first_tire.frame_size]
+                # print("input_sub_batch : ", input_sub_batch.shape)
+                # print("target_sub_batch : ", target_sub_batch.shape)
 
-            # print(model(input_sequences).size())
+                logit = model(input_sub_batch).view(-1, model.q_levels)
+                prediction = F.log_softmax(logit.view(args.batch_size, -1, model.q_levels), dim=1)
 
-            logit = model(input_sequences)
-            prediction = F.log_softmax(logit.view(args.batch_size, -1, self.q_levels), dim=1)
+                # print("logit shape : ", logit.shape)
+                # print("prediction shape : ", prediction.shape)
+                target_sub_batch = target_sub_batch.contiguous().view(-1)
+                # print("target_sequences shape : ", target_sub_batch.shape)
 
-            loss = loss_function(logit, target_sequences)
+                loss = loss_function(logit, target_sub_batch)
 
-            optimizer.zero_grad()
-            loss.backward()
-            optimizer.step()
+                optimizer.zero_grad()
+                loss.backward()
+                optimizer.step()
 
-            exit()
+                print(loss)
 
-    upper_tier_conditioning = None
-    hidden_states = {rnn: None for rnn in model.frame_level_rnns}
+                # exit()
 
-    for rnn in model.frame_level_rnns:
-        print(rnn.frame_size)
-        print(rnn.n_frame_samples)
-
-    for i, rnn in enumerate(reversed(model.frame_level_rnns)):
-
-        print(i)
-        print(rnn.frame_size)
-        print(rnn.n_frame_samples)
-        from_index = model.lookback - rnn.n_frame_samples
-        to_index = -rnn.n_frame_samples + 1
-        prev_samples = 2 * utils.linear_dequantize(
-            input_sequences[:, from_index : to_index],
-            model.q_levels
-        )
-        print(model.q_levels)
-        print(prev_samples.size())
-        prev_samples = prev_samples.contiguous().view(
-            batch_size, -1, rnn.n_frame_samples
-        )
-        print(prev_samples.size())
-
-        def run_rnn(rnn, prev_samples, upper_tier_conditioning):
-            (output, new_hidden) = rnn(
-                prev_samples, upper_tier_conditioning, hidden_states[rnn]
-            )
-            hidden_states[rnn] = new_hidden.detach()
-            return output
-
-        upper_tier_conditioning = run_rnn(
-            rnn, prev_samples, upper_tier_conditioning
-        )
-
-    bottom_frame_size = model.frame_level_rnns[0].frame_size
-    mlp_input_sequences = input_sequences \
-        [:, model.lookback - bottom_frame_size :]
-
-    result = model.sample_level_mlp(
-        mlp_input_sequences, upper_tier_conditioning
-    )
-
-    print("finish")
-    exit()
-
-
-
-    predictor = Predictor(model)
-    if params['cuda']:
-        model = model.cuda()
-        predictor = predictor.cuda()
-
-    optimizer = gradient_clipping(torch.optim.Adam(predictor.parameters()))
-
-    data_loader = make_data_loader(model.lookback, params)
-    test_split = 1 - params['test_frac']
-    val_split = test_split - params['val_frac']
+    # upper_tier_conditioning = None
+    # hidden_states = {rnn: None for rnn in model.frame_level_rnns}
+    #
+    # for rnn in model.frame_level_rnns:
+    #     print(rnn.frame_size)
+    #     print(rnn.n_frame_samples)
+    #
+    # for i, rnn in enumerate(reversed(model.frame_level_rnns)):
+    #
+    #     print(i)
+    #     print(rnn.frame_size)
+    #     print(rnn.n_frame_samples)
+    #     from_index = model.lookback - rnn.n_frame_samples
+    #     to_index = -rnn.n_frame_samples + 1
+    #     prev_samples = 2 * utils.linear_dequantize(
+    #         input_sequences[:, from_index : to_index],
+    #         model.q_levels
+    #     )
+    #     print(model.q_levels)
+    #     print(prev_samples.size())
+    #     prev_samples = prev_samples.contiguous().view(
+    #         batch_size, -1, rnn.n_frame_samples
+    #     )
+    #     print(prev_samples.size())
+    #
+    #     def run_rnn(rnn, prev_samples, upper_tier_conditioning):
+    #         (output, new_hidden) = rnn(
+    #             prev_samples, upper_tier_conditioning, hidden_states[rnn]
+    #         )
+    #         hidden_states[rnn] = new_hidden.detach()
+    #         return output
+    #
+    #     upper_tier_conditioning = run_rnn(
+    #         rnn, prev_samples, upper_tier_conditioning
+    #     )
+    #
+    # bottom_frame_size = model.frame_level_rnns[0].frame_size
+    # mlp_input_sequences = input_sequences \
+    #     [:, model.lookback - bottom_frame_size :]
+    #
+    # result = model.sample_level_mlp(
+    #     mlp_input_sequences, upper_tier_conditioning
+    # )
+    #
+    # print("finish")
+    # exit()
+    #
+    #
+    #
+    # predictor = Predictor(model)
+    # if params['cuda']:
+    #     model = model.cuda()
+    #     predictor = predictor.cuda()
+    #
+    # optimizer = gradient_clipping(torch.optim.Adam(predictor.parameters()))
+    #
+    # data_loader = make_data_loader(model.lookback, params)
+    # test_split = 1 - params['test_frac']
+    # val_split = test_split - params['val_frac']
 
 
 def get_options(args=None):
@@ -195,7 +213,7 @@ def get_options(args=None):
         description="Attention based model for solving the Travelling Salesman Problem with Reinforcement Learning")
 
     # Data
-    parser.add_argument('--batch_size', type=int, default=32, help='Number of instances per batch during training')
+    parser.add_argument('--batch_size', type=int, default=2, help='Number of instances per batch during training')
     parser.add_argument('--val_dataset', type=str, default=None, help='Dataset file to use for validation')
     parser.add_argument('--epochs', type=int, default=100, help='Number of epochs')
     parser.add_argument('--lr', type=float, default=0.001, help='Learning rate')

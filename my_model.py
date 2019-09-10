@@ -22,7 +22,7 @@ class SampleRNN(torch.nn.Module):
 
         self.middle_tire = MiddleTire(frame_size=frame_sizes[1], frame_size4upsampling=frame_sizes[2])
 
-        self.last_tire = LastTire()
+        self.last_tire = LastTire(bs=bs)
 
 
     def forward(self, input_sequences):
@@ -33,13 +33,13 @@ class SampleRNN(torch.nn.Module):
             input_sequences[:,  : to_index],
             self.q_levels
         )
-        print("prev_samples.shape : {}".format(prev_samples.shape))
+        # print("prev_samples.shape : {}".format(prev_samples.shape))
         input4first_tire = prev_samples.contiguous().view(
             self.batch_size, -1, self.first_tire.frame_size
         )
-        print("input4first_tire.shape : {}".format(input4first_tire.shape))
+        # print("input4first_tire.shape : {}".format(input4first_tire.shape))
         first_tire_output = self.first_tire(input4first_tire)
-        print("first_tire_output.shape : {}".format(first_tire_output.shape))
+        # print("first_tire_output.shape : {}".format(first_tire_output.shape))
 
         """Middle Tire"""
         from_index = self.first_tire.frame_size - self.middle_tire.frame_size
@@ -57,7 +57,7 @@ class SampleRNN(torch.nn.Module):
         # input4last_tire = prev_samples.contiguous().view(
         #     self.batch_size, -1, self.last_tire.frame_size
         # )
-
+        # print("middle_tire_output : ", middle_tire_output.shape)
         return self.last_tire(input_sequences[:, from_index : to_index], middle_tire_output)
 
     @property
@@ -97,10 +97,10 @@ class FirstTire(torch.nn.Module):
 
     def forward(self, input):
         x = self.input_expand(input.permute(0, 2, 1)).permute(0, 2, 1)
-        print("x.shape : {}".format(x.shape))
+        # print("x.shape : {}".format(x.shape))
 
         rnn_output, new_hidden_state = self.rnn(x)
-        print("rnn_output.shape : {}".format(rnn_output.shape))
+        # print("rnn_output.shape : {}".format(rnn_output.shape))
 
         # update the rnn's hidden state
         self.rnn_hideen_state = new_hidden_state
@@ -143,8 +143,8 @@ class MiddleTire(torch.nn.Module):
 
     def forward(self, input, input_from_1st_tire):
         input = self.input_expand(input.permute(0, 2, 1)).permute(0, 2, 1)
-        print(input.size())
-        print(input_from_1st_tire.size())
+        # print(input.size())
+        # print(input_from_1st_tire.size())
         x = input + input_from_1st_tire
 
         rnn_output, new_hidden_state = self.rnn(x)
@@ -185,19 +185,25 @@ class LastTire(torch.nn.Module):
 
     def forward(self, input, input_from_middle_tire):
 
+        # print("input 0: ", input.shape)
+
         input = self.embedding(
             input.contiguous().view(-1)
         ).view(
             self.batch_size, -1, self.q_levels
         )
+        # print("input 1: ", input.shape)
 
         input = input.permute(0, 2, 1)
         input_from_middle_tire = input_from_middle_tire.permute(0, 2, 1)
 
+        # print("input 2: ", input.shape)
+        # print("input_from_middle_tire : ", input_from_middle_tire.shape)
+
         x = F.relu(self.MLP_1(input) + input_from_middle_tire)
         x = F.relu(self.MLP_2(x))
         x = self.MLP_3(x).permute(0, 2, 1).contiguous()
-        print("x.view(-1, self.q_levels) : {}".format(x.view(-1, self.q_levels).shape))
+        # print("x.view(-1, self.q_levels) : {}".format(x.view(-1, self.q_levels).shape))
         return x.view(self.batch_size, -1, self.q_levels)
 
         # return F.log_softmax(x.view(-1, self.q_levels), dim=1).view(self.batch_size, -1, self.q_levels)
