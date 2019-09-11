@@ -18,12 +18,14 @@ import re
 import argparse
 
 import librosa
+import numpy as np
 
 import utils
 
 from os import listdir
 from os.path import isfile, join
 
+device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 default_params = {
     # model parameters
@@ -56,43 +58,18 @@ tag_params = [
     'batch_size', 'dataset', 'val_frac', 'test_frac'
 ]
 
-def make_data_loader(overlap_len, params):
-    path = os.path.join(params['datasets_path'], params['dataset'])
-    def data_loader(split_from, split_to, eval):
-        dataset = FolderDataset(
-            path, overlap_len, params['q_levels'], split_from, split_to
-        )
-        return DataLoader(
-            dataset,
-            batch_size=params['batch_size'],
-            seq_len=params['seq_len'],
-            overlap_len=overlap_len,
-            shuffle=(not eval),
-            drop_last=(not eval)
-        )
-    return data_loader
-
-def prepare_data(data_dir):
-    filenames = [f for f in listdir(data_dir) if isfile(join(data_dir, f))]
-    # X =
-    for i, filename in enumerate(filenames):
-        (seq, _) = librosa.load(data_dir + filename, sr=None, mono=True)
-        print(len(seq))
-        input_sequences =  torch.cat([
-            torch.LongTensor(model.lookback) \
-                 .fill_(utils.q_zero(model.q_levels)),
-            utils.linear_quantize(
-                torch.from_numpy(seq), model.q_levels
-            )
-        ])
-
 
 def main(args):
+
+
     frame_sizes = [16,4,4]
-    model = SampleRNN(
-        frame_sizes = frame_sizes, bs = args.batch_size
-    )
+    model = None
     sub_batch_length = 512
+    finish_flag = False
+
+    model = SampleRNN(frame_sizes = frame_sizes, bs = args.batch_size)
+    model.to(device)
+
     loss_function = nn.CrossEntropyLoss()
     optimizer = optim.Adam(model.parameters(), lr=args.lr, weight_decay=1e-3)
 
@@ -104,9 +81,8 @@ def main(args):
 
     """Load wav file here"""
     # y, sr = librosa.load("./data/test.wav")
-
-    (seq, _) = librosa.load("./data/test.wav", sr=None, mono=True)
-    print(len(seq))
+    # (seq, _) = librosa.load("./data/test.wav", sr=None, mono=True)
+    # print(len(seq))
 
     for epoch in range(args.epochs):
         # loss_history_training.append(0.0)
@@ -145,67 +121,53 @@ def main(args):
 
                 print(loss)
 
-                # exit()
+                if loss.detach().numpy() < 0.39:
+                    finish_flag = True
+                if finish_flag:
+                    break
+            if finish_flag:
+                break
+        if finish_flag:
+            break
+    j = 12
+    generate(input_sequences[:, sub_batch_length*j : sub_batch_length*(j+1)][:1, -frame_sizes[0]*2:], model)
 
-    # upper_tier_conditioning = None
-    # hidden_states = {rnn: None for rnn in model.frame_level_rnns}
-    #
-    # for rnn in model.frame_level_rnns:
-    #     print(rnn.frame_size)
-    #     print(rnn.n_frame_samples)
-    #
-    # for i, rnn in enumerate(reversed(model.frame_level_rnns)):
-    #
-    #     print(i)
-    #     print(rnn.frame_size)
-    #     print(rnn.n_frame_samples)
-    #     from_index = model.lookback - rnn.n_frame_samples
-    #     to_index = -rnn.n_frame_samples + 1
-    #     prev_samples = 2 * utils.linear_dequantize(
-    #         input_sequences[:, from_index : to_index],
-    #         model.q_levels
-    #     )
-    #     print(model.q_levels)
-    #     print(prev_samples.size())
-    #     prev_samples = prev_samples.contiguous().view(
-    #         batch_size, -1, rnn.n_frame_samples
-    #     )
-    #     print(prev_samples.size())
-    #
-    #     def run_rnn(rnn, prev_samples, upper_tier_conditioning):
-    #         (output, new_hidden) = rnn(
-    #             prev_samples, upper_tier_conditioning, hidden_states[rnn]
-    #         )
-    #         hidden_states[rnn] = new_hidden.detach()
-    #         return output
-    #
-    #     upper_tier_conditioning = run_rnn(
-    #         rnn, prev_samples, upper_tier_conditioning
-    #     )
-    #
-    # bottom_frame_size = model.frame_level_rnns[0].frame_size
-    # mlp_input_sequences = input_sequences \
-    #     [:, model.lookback - bottom_frame_size :]
-    #
-    # result = model.sample_level_mlp(
-    #     mlp_input_sequences, upper_tier_conditioning
-    # )
-    #
-    # print("finish")
-    # exit()
-    #
-    #
-    #
-    # predictor = Predictor(model)
-    # if params['cuda']:
-    #     model = model.cuda()
-    #     predictor = predictor.cuda()
-    #
-    # optimizer = gradient_clipping(torch.optim.Adam(predictor.parameters()))
-    #
-    # data_loader = make_data_loader(model.lookback, params)
-    # test_split = 1 - params['test_frac']
-    # val_split = test_split - params['val_frac']
+
+def generate(input_sequence, model):
+    print(input_sequence.shape)
+    samples = np.zeros((model.first_tire.frame_size * 1000))
+    for i in range(1000):
+        logit = model(input_sequence).view(-1, model.q_levels)
+
+        # print(logit.shape)
+
+        prediction = np.argmax(logit.view(1, -1, model.q_levels).detach().numpy(), axis=2)
+        # print(prediction.shape)
+        samples[i*model.first_tire.frame_size : (i+1)*model.first_tire.frame_size] = utils.mu_law_decoding(prediction)[0]
+        # print(prediction)
+        # print("shapes")
+        # print(prediction.shape)
+        # print(input_sequence.shape)
+        input_sequence = input_sequence[:, -model.first_tire.frame_size:]
+        # print(input_sequence.shape)
+        # print(model.first_tire.frame_size)
+
+        input_sequence =  torch.cat((input_sequence[-model.first_tire.frame_size:], torch.LongTensor(prediction.reshape(1,-1))), dim=1)
+        # print(input_sequence.shape)
+        # print("here")
+
+    import matplotlib.pyplot as plt
+    fig = plt.figure()
+    ax = fig.add_subplot(1, 1, 1)
+    print(samples.shape)
+    print(np.arange(16000).shape)
+    ax.plot(np.arange(16000), samples, color='tab:blue')
+    plt.show()
+
+    from scipy.io.wavfile import write
+    scaled = np.int16(samples/np.max(np.abs(samples)) * 32767)
+    write('test.wav', 16000, scaled)
+
 
 
 def get_options(args=None):
@@ -213,7 +175,7 @@ def get_options(args=None):
         description="Attention based model for solving the Travelling Salesman Problem with Reinforcement Learning")
 
     # Data
-    parser.add_argument('--batch_size', type=int, default=2, help='Number of instances per batch during training')
+    parser.add_argument('--batch_size', type=int, default=1, help='Number of instances per batch during training')
     parser.add_argument('--val_dataset', type=str, default=None, help='Dataset file to use for validation')
     parser.add_argument('--epochs', type=int, default=100, help='Number of epochs')
     parser.add_argument('--lr', type=float, default=0.001, help='Learning rate')
